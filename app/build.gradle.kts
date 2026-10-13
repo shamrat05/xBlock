@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "com.hazbu.xblock"
-    compileSdk = 37
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.hazbu.xblock"

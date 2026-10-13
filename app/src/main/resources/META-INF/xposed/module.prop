@@ -1,5 +1,5 @@
-name=xBlock
-description=xBlock - Absolute Zero AdBlocker
+name=xBlock Root UI/WebView AdBlocker
+description=Root app-level UI, WebView and ad-intent blocker; no VPN or DNS interception
 minApiVersion=102
 targetApiVersion=102
 exceptionMode=passthrough

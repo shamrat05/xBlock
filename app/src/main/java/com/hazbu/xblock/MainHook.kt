@@ -33,12 +33,28 @@ class MainHook : XposedModule() {
     companion object {
         private const val MODULE_PACKAGE = "com.hazbu.xblock"
         private const val TAG = "xBlock"
+
+        /* Fast, offline SDK coverage. The Exodus list is merged when the
+           provider is reachable; these prefixes keep blocking effective even
+           during early app startup or provider-visibility restrictions. */
+        private val BUILTIN_AD_PACKAGES = setOf(
+            "com.google.android.gms.ads", "com.google.android.ads",
+            "com.google.ads", "com.facebook.ads", "com.applovin",
+            "com.unity3d.ads", "com.ironsource", "com.startapp",
+            "com.chartboost", "com.vungle", "com.inmobi",
+            "com.mopub", "com.amazon.device.ads", "com.bytedance.sdk.openadsdk",
+            "com.pgl.ssdk", "com.mintegral", "com.tapjoy"
+        )
+    }
+
+    init {
+        dynamicPackages.addAll(BUILTIN_AD_PACKAGES)
     }
 
     override fun onPackageReady(param: PackageReadyParam) {
         super.onPackageReady(param)
         
-        Log.d(TAG, "onPackageReady: ${param.packageName}")
+        Log.e(TAG, "onPackageReady: ${param.packageName} builtins=${BUILTIN_AD_PACKAGES.size}")
 
         if (param.packageName == MODULE_PACKAGE) return
         
@@ -46,11 +62,9 @@ class MainHook : XposedModule() {
 
         val classLoader = param.classLoader
         hookApplication(classLoader)
-        hookDns(classLoader)
-        hookDeepDns(classLoader)
-        hookSocket(classLoader)
-        hookOkHttp(classLoader)
-        hookCronet(classLoader)
+        // Network/DNS interception is intentionally disabled. The root hosts
+        // layer handles domain blocking without a VPN, while this module stays
+        // focused on app UI, WebView, intent and ad-service hooks.
         hookUi(classLoader)
         hookWebView(classLoader)
         hookIntents(classLoader)
@@ -116,9 +130,6 @@ class MainHook : XposedModule() {
                 statusCursor.close()
             }
 
-            // Show appropriate Toast
-            showToast(context, "xBlock active : $count filter")
-
             // Then fetch domains
             val uri = "content://${Constants.AUTHORITY}/domains".toUri()
             val cursor = context.contentResolver.query(uri, null, null, null, null)
@@ -145,7 +156,6 @@ class MainHook : XposedModule() {
                     tempSet.add(pkgCursor.getString(0))
                 }
                 pkgCursor.close()
-                dynamicPackages.clear()
                 dynamicPackages.addAll(tempSet)
                 Log.d(TAG, "Successfully fetched ${dynamicPackages.size} packages from Exodus")
             }
@@ -276,27 +286,20 @@ class MainHook : XposedModule() {
     private fun hookUi(classLoader: ClassLoader) {
         try {
             val viewGroupClass = classLoader.loadClass("android.view.ViewGroup")
-            val addViewMethod = viewGroupClass.getDeclaredMethod("addView", View::class.java, ViewGroup.LayoutParams::class.java)
-            
-            hook(addViewMethod).intercept { chain ->
-                val view = chain.args[0] as? View
-                if (view != null && AdBlockUtils.isAdClass(view.javaClass.name, dynamicPackages)) {
-                    Log.d(TAG, "UI blocking: Hiding ${view.javaClass.name}")
-                    recursiveHide(view)
-                }
-                chain.proceed()
-            }
-
-            try {
-                val viewClass = classLoader.loadClass("android.view.View")
-                hook(viewClass.getDeclaredMethod("setVisibility", Int::class.javaPrimitiveType)).intercept { chain ->
-                    val view = chain.thisObject as View
-                    if (AdBlockUtils.isAdClass(view.javaClass.name, dynamicPackages)) {
-                        chain.args[0] = View.GONE
+            // Apps use every addView overload, including addView(View). Hook
+            // all overloads so SDK ad views cannot bypass the blocker.
+            val addMethods = viewGroupClass.declaredMethods.filter { it.name == "addView" }
+            Log.e(TAG, "addView overloads=${addMethods.size}")
+            addMethods.forEach { method ->
+                hook(method).intercept { chain ->
+                    val view = chain.args.firstOrNull { it is View } as? View
+                    if (view != null && AdBlockUtils.isAdClass(view.javaClass.name, dynamicPackages)) {
+                        Log.i(TAG, "UI blocking: Hiding ${view.javaClass.name}")
+                        recursiveHide(view)
                     }
                     chain.proceed()
                 }
-            } catch (_: Exception) {}
+            }
 
         } catch (_: Exception) {
             Log.e(TAG, "UI Hook Error")
