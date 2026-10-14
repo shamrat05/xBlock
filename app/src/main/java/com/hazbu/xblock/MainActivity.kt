@@ -8,6 +8,7 @@ import android.text.Spanned
 import android.text.style.ForegroundColorSpan
 import android.widget.Button
 import android.widget.TextView
+import com.google.android.material.switchmaterial.SwitchMaterial
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.graphics.toColorInt
@@ -36,6 +37,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnDeleteAdGuard: Button
     private lateinit var btnDeleteExodus: Button
     private lateinit var tvTitle: TextView
+    private lateinit var masterSwitch: SwitchMaterial
+    private lateinit var masterStatus: TextView
+    private var changingMaster = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         DynamicColors.applyToActivityIfAvailable(this)
@@ -45,6 +49,8 @@ class MainActivity : AppCompatActivity() {
 
         setupWindowInsets()
         setupUI()
+        normalizeFilterState()
+        RemoteConfig.connect(this)
         refreshUI()
     }
 
@@ -64,6 +70,8 @@ class MainActivity : AppCompatActivity() {
     private fun setupUI() {
         adguardStatus = findViewById(R.id.adguard_status)
         exodusStatus = findViewById(R.id.exodus_status)
+        masterSwitch = findViewById(R.id.master_switch)
+        masterStatus = findViewById(R.id.master_status)
         btnAdGuard = findViewById(R.id.btn_update_adguard)
         btnExodus = findViewById(R.id.btn_update_exodus)
         btnDeleteAdGuard = findViewById(R.id.btn_delete_adguard)
@@ -71,6 +79,10 @@ class MainActivity : AppCompatActivity() {
         tvTitle = findViewById(R.id.title)
 
         setupTitleSpannable()
+
+        masterSwitch.setOnCheckedChangeListener { _, checked ->
+            if (!changingMaster) setMasterEnabled(checked)
+        }
 
         btnAdGuard.setOnClickListener { triggerUpdate(FilterUpdateWorker.TYPE_ADGUARD) }
         btnExodus.setOnClickListener { triggerUpdate(FilterUpdateWorker.TYPE_EXODUS) }
@@ -81,6 +93,44 @@ class MainActivity : AppCompatActivity() {
         btnDeleteExodus.setOnClickListener {
             deleteFilter(KEY_PACKAGES, KEY_LAST_UPDATE_EXODUS)
         }
+
+        refreshMaster()
+    }
+
+    private fun refreshMaster() {
+        Thread {
+            val status = RootControl.status()
+            runOnUiThread {
+                changingMaster = true
+                masterSwitch.isChecked = status.enabled
+                changingMaster = false
+                masterStatus.text = if (status.rootAvailable) {
+                    if (status.enabled) "ON · root hosts + modern LSPosed" else "OFF"
+                } else {
+                    "Root unavailable: ${status.details}"
+                }
+            }
+        }.start()
+    }
+
+    private fun setMasterEnabled(enabled: Boolean) {
+        masterSwitch.isEnabled = false
+        masterStatus.text = "Applying…"
+        Thread {
+            val result = RootControl.setEnabled(enabled)
+            val status = RootControl.status()
+            runOnUiThread {
+                changingMaster = true
+                masterSwitch.isChecked = status.enabled
+                masterSwitch.isEnabled = true
+                changingMaster = false
+                masterStatus.text = if (result.success && status.enabled == enabled) {
+                    if (enabled) "ON · reopen apps after switching" else "OFF"
+                } else {
+                    "Could not change state: ${result.error.ifBlank { "root command failed" }}"
+                }
+            }
+        }.start()
     }
 
     private fun setupTitleSpannable() {
@@ -103,11 +153,31 @@ class MainActivity : AppCompatActivity() {
 
     private fun deleteFilter(vararg keys: String) {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        if (keys.contains(KEY_DOMAINS)) AdBlockUtils.deleteDomainsFile(this)
         prefs.edit().apply {
             keys.forEach { remove(it) }
         }.apply()
         AdBlockUtils.fixPermissions(this)
         refreshUI()
+    }
+
+    private fun normalizeFilterState() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val domainsFile = AdBlockUtils.domainsFile(this)
+        val domainsReady = domainsFile.isFile && domainsFile.length() > 0
+        val packages = prefs.getStringSet(KEY_PACKAGES, emptySet()) ?: emptySet()
+        val editor = prefs.edit()
+        if (domainsReady) {
+            // Older builds put 184k domains in SharedPreferences XML. That
+            // left the download flag stuck and made subsequent reads unreliable.
+            editor.remove(KEY_DOMAINS)
+                .putBoolean(KEY_IS_DOWNLOADING_ADGUARD, false)
+                .putLong(KEY_LAST_UPDATE_ADGUARD, domainsFile.lastModified())
+        }
+        if (packages.isNotEmpty()) {
+            editor.putBoolean(KEY_IS_DOWNLOADING_EXODUS, false)
+        }
+        editor.apply()
     }
 
     private fun triggerUpdate(type: String) {
@@ -143,15 +213,17 @@ class MainActivity : AppCompatActivity() {
         val sdf = SimpleDateFormat("dd MMM HH:mm", Locale.getDefault())
 
         // AdGuard
-        val isDownloadingAdGuard = prefs.getBoolean(KEY_IS_DOWNLOADING_ADGUARD, false)
+        val domainCount = AdBlockUtils.domainCount(this)
+        val lastUpdateAdGuard = prefs.getLong(KEY_LAST_UPDATE_ADGUARD, 0L).takeIf { it > 0 }
+            ?: AdBlockUtils.domainsFile(this).takeIf { it.isFile }?.lastModified() ?: 0L
+        val isDownloadingAdGuard = prefs.getBoolean(KEY_IS_DOWNLOADING_ADGUARD, false) &&
+            domainCount == 0
         if (isDownloadingAdGuard) {
             adguardStatus.text = getString(R.string.status_updating)
             btnAdGuard.isEnabled = false
         } else {
-            val domains = prefs.getStringSet(KEY_DOMAINS, emptySet()) ?: emptySet()
-            val lastUpdateAdGuard = prefs.getLong(KEY_LAST_UPDATE_ADGUARD, 0L)
             val adguardDateStr = if (lastUpdateAdGuard > 0) sdf.format(Date(lastUpdateAdGuard)) else getString(R.string.never)
-            adguardStatus.text = getString(R.string.count_label, domains.size) + "\n" + getString(R.string.last_label, adguardDateStr)
+            adguardStatus.text = getString(R.string.count_label, domainCount) + "\n" + getString(R.string.last_label, adguardDateStr)
             btnAdGuard.isEnabled = true
         }
 

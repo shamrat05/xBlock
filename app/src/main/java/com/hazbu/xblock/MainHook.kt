@@ -1,6 +1,7 @@
 package com.hazbu.xblock
 
-import com.hazbu.xblock.Constants.AUTHORITY
+import com.hazbu.xblock.Constants.KEY_PACKAGES
+import com.hazbu.xblock.Constants.REMOTE_PREFS_GROUP
 
 import android.app.Activity
 import android.content.Context
@@ -21,6 +22,7 @@ import io.github.libxposed.api.XposedModuleInterface.HotReloadedParam
 import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import java.io.ByteArrayInputStream
+import android.os.ParcelFileDescriptor
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.SocketAddress
@@ -29,6 +31,7 @@ class MainHook : XposedModule() {
 
     private var dynamicDomains = mutableSetOf<String>()
     private var dynamicPackages = mutableSetOf<String>()
+    private var domainBloom: DomainBloom? = null
 
     companion object {
         private const val MODULE_PACKAGE = "com.hazbu.xblock"
@@ -61,7 +64,7 @@ class MainHook : XposedModule() {
         Log.d(TAG, "Hooking ${param.packageName} via libxposed")
 
         val classLoader = param.classLoader
-        hookApplication(classLoader)
+        loadRemotePackageConfig()
         // Network/DNS interception is intentionally disabled. The root hosts
         // layer handles domain blocking without a VPN, while this module stays
         // focused on app UI, WebView, intent and ad-service hooks.
@@ -96,71 +99,18 @@ class MainHook : XposedModule() {
         }
     }
 
-    private fun hookApplication(classLoader: ClassLoader) {
+    private fun loadRemotePackageConfig() {
         try {
-            val appClass = classLoader.loadClass("android.app.Application")
-            val onCreateMethod = appClass.getDeclaredMethod("onCreate")
-            
-            hook(onCreateMethod).intercept { chain ->
-                val result = chain.proceed()
-                val context = chain.thisObject as Context
-                
-                Thread {
-                    fetchDomainsFromProvider(context)
-                }.start()
-
-                result
+            val prefs = getRemotePreferences(REMOTE_PREFS_GROUP)
+            val packages = prefs.getStringSet(KEY_PACKAGES, emptySet()) ?: emptySet()
+            dynamicPackages.addAll(packages)
+            val fd = openRemoteFile(Constants.DOMAIN_BLOOM_FILE)
+            ParcelFileDescriptor.AutoCloseInputStream(fd).use { input ->
+                domainBloom = DomainBloom.read(input)
             }
+            Log.d(TAG, "Loaded ${packages.size} SDK packages from API 102 remote preferences")
         } catch (_: Exception) {
-            Log.e(TAG, "Hook Error")
-        }
-    }
-
-    private fun fetchDomainsFromProvider(context: Context) {
-        try {
-            // First query status
-            val statusUri = "content://${Constants.AUTHORITY}/status".toUri()
-            val statusCursor = context.contentResolver.query(statusUri, null, null, null, null)
-            var count = 0
-
-            if (statusCursor != null) {
-                if (statusCursor.moveToFirst()) {
-                    count = statusCursor.getInt(0)
-                }
-                statusCursor.close()
-            }
-
-            // Then fetch domains
-            val uri = "content://${Constants.AUTHORITY}/domains".toUri()
-            val cursor = context.contentResolver.query(uri, null, null, null, null)
-            
-            if (cursor != null) {
-                val tempSet = mutableSetOf<String>()
-                while (cursor.moveToNext()) {
-                    val domain = cursor.getString(0)
-                    tempSet.add(domain)
-                }
-                cursor.close()
-                
-                dynamicDomains.clear()
-                dynamicDomains.addAll(tempSet)
-                Log.d(TAG, "Successfully fetched ${dynamicDomains.size} domains")
-            }
-
-            // Finally fetch packages
-            val pkgUri = "content://${Constants.AUTHORITY}/packages".toUri()
-            val pkgCursor = context.contentResolver.query(pkgUri, null, null, null, null)
-            if (pkgCursor != null) {
-                val tempSet = mutableSetOf<String>()
-                while (pkgCursor.moveToNext()) {
-                    tempSet.add(pkgCursor.getString(0))
-                }
-                pkgCursor.close()
-                dynamicPackages.addAll(tempSet)
-                Log.d(TAG, "Successfully fetched ${dynamicPackages.size} packages from Exodus")
-            }
-        } catch (_: Exception) {
-            Log.e(TAG, "Failed to fetch data from provider")
+            Log.w(TAG, "Remote package config unavailable; built-in SDK list remains active")
         }
     }
 
@@ -464,7 +414,12 @@ class MainHook : XposedModule() {
     }
 
     private fun isAdDomain(host: String): Boolean {
-        return dynamicDomains.any { host.contains(it, ignoreCase = true) }
+        if (dynamicDomains.any { host.contains(it, ignoreCase = true) }) return true
+        val bloom = domainBloom ?: return false
+        val labels = host.trim('.').lowercase().split('.')
+        return (0 until labels.lastIndex).any { index ->
+            bloom.mightContain(labels.drop(index).joinToString("."))
+        }
     }
 
     private fun isAdIntent(intent: Intent): Boolean {

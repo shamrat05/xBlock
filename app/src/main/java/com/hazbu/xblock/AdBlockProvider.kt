@@ -28,10 +28,15 @@ class AdBlockProvider : ContentProvider() {
 
         return when (uri.path) {
             "/domains" -> {
-                val domains = prefs.getStringSet(KEY_DOMAINS, emptySet()) ?: emptySet()
                 val cursor = MatrixCursor(arrayOf("domain"))
-                for (domain in domains) {
-                    cursor.addRow(arrayOf(domain))
+                val file = AdBlockUtils.domainsFile(context)
+                if (file.isFile) {
+                    file.forEachLine { domain ->
+                        if (domain.isNotBlank()) cursor.addRow(arrayOf(domain))
+                    }
+                } else {
+                    val domains = prefs.getStringSet(KEY_DOMAINS, emptySet()) ?: emptySet()
+                    for (domain in domains) cursor.addRow(arrayOf(domain))
                 }
                 cursor
             }
@@ -44,11 +49,17 @@ class AdBlockProvider : ContentProvider() {
                 cursor
             }
             "/status" -> {
-                val domains = prefs.getStringSet(KEY_DOMAINS, emptySet()) ?: emptySet()
+                val domains = if (AdBlockUtils.domainsFile(context).isFile) {
+                    AdBlockUtils.domainCount(context)
+                } else {
+                    (prefs.getStringSet(KEY_DOMAINS, emptySet()) ?: emptySet()).size
+                }
                 val packages = prefs.getStringSet(KEY_PACKAGES, emptySet()) ?: emptySet()
-                val count = domains.size + packages.size
-                val isDownloading = prefs.getBoolean(KEY_IS_DOWNLOADING_ADGUARD, false) ||
-                                    prefs.getBoolean(KEY_IS_DOWNLOADING_EXODUS, false)
+                val count = domains + packages.size
+                val isDownloading = (prefs.getBoolean(KEY_IS_DOWNLOADING_ADGUARD, false) &&
+                    !prefs.contains(Constants.KEY_LAST_UPDATE_ADGUARD)) ||
+                    (prefs.getBoolean(KEY_IS_DOWNLOADING_EXODUS, false) &&
+                        !prefs.contains(Constants.KEY_LAST_UPDATE_EXODUS))
 
                 val cursor = MatrixCursor(arrayOf("count", "is_downloading", "just_updated"))
                 cursor.addRow(arrayOf(count, if (isDownloading) 1 else 0, 0)) // just_updated always 0

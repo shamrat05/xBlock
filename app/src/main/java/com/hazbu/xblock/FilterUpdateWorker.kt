@@ -83,9 +83,19 @@ class FilterUpdateWorker(
 
     private fun saveFilter(filterKey: String, timeKey: String, data: Set<String>) {
         val prefs = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit {
-            putStringSet(filterKey, data)
-            putLong(timeKey, System.currentTimeMillis())
+        if (filterKey == KEY_DOMAINS) {
+            // Large domain sets are stored line-by-line. SharedPreferences XML
+            // becomes slow and unreliable at this size.
+            AdBlockUtils.writeDomainsFile(applicationContext, data)
+            prefs.edit {
+                remove(filterKey)
+                putLong(timeKey, System.currentTimeMillis())
+            }
+        } else {
+            prefs.edit {
+                putStringSet(filterKey, data)
+                putLong(timeKey, System.currentTimeMillis())
+            }
         }
         AdBlockUtils.fixPermissions(applicationContext)
     }

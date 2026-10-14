@@ -3,6 +3,9 @@ package com.hazbu.xblock
 object Constants {
     const val PREFS_NAME = "ad_prefs"
     const val AUTHORITY = "com.hazbu.xblock.provider"
+    const val DOMAINS_FILE = "adguard_domains.txt"
+    const val REMOTE_PREFS_GROUP = "xblock"
+    const val DOMAIN_BLOOM_FILE = "adguard_domains.bloom"
     
     const val KEY_DOMAINS = "domains"
     const val KEY_PACKAGES = "packages"

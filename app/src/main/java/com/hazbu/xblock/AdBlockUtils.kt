@@ -4,6 +4,8 @@ import android.content.Context
 import com.hazbu.xblock.Constants.PREFS_NAME
 import org.json.JSONObject
 import java.io.File
+import java.io.BufferedWriter
+import java.io.FileWriter
 
 object AdBlockUtils {
     const val FILTER_URL = "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"
@@ -54,6 +56,32 @@ object AdBlockUtils {
     fun isAdClass(className: String, adPackages: Set<String>): Boolean {
         val lowerName = className.lowercase()
         return adPackages.any { lowerName.startsWith(it.lowercase()) }
+    }
+
+    fun domainsFile(context: Context): File = File(context.filesDir, Constants.DOMAINS_FILE)
+
+    fun domainCount(context: Context): Int {
+        val file = domainsFile(context)
+        if (!file.isFile) return 0
+        return file.useLines { lines -> lines.count { it.isNotBlank() } }
+    }
+
+    fun writeDomainsFile(context: Context, domains: Set<String>) {
+        val target = domainsFile(context)
+        val temp = File(context.filesDir, "${Constants.DOMAINS_FILE}.tmp")
+        BufferedWriter(FileWriter(temp)).use { writer ->
+            domains.asSequence().filter { it.isNotBlank() }.sorted().forEach {
+                writer.appendLine(it)
+            }
+        }
+        if (!temp.renameTo(target)) {
+            temp.copyTo(target, overwrite = true)
+            temp.delete()
+        }
+    }
+
+    fun deleteDomainsFile(context: Context) {
+        domainsFile(context).delete()
     }
 
     fun fixPermissions(context: Context) {

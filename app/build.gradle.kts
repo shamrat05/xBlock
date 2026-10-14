@@ -51,6 +51,7 @@ android {
 
 dependencies {
     compileOnly(libs.libxposed.api)
+    implementation(files("libs/service-101.0.0.aar", "libs/interface-101.0.0.aar"))
     implementation(libs.okhttp)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
